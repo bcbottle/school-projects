@@ -1,0 +1,442 @@
+---
+title: "Multinomial Logistic Regression - COMP 4442 Final Project"
+author: "E. Sullivan, B. Bottle, T. Mark, N. Kwartei Quartey, Peyton Capristo"
+date: "`r Sys.Date()`"
+output:
+  word_document: default
+  pdf_document: default
+---
+
+Install necessary packages
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+library(tidyverse)
+library(nnet)
+library(broom)
+library(car)
+
+```
+
+# Motivation
+
+The purpose is to demonstrate the method of applying Multinomial Logistic Regression to an appropriate use case. We will walk through the setup, assumptions and their assessment, training a multinomial logistic regression model, and assessing its performance.
+
+# Data Description
+
+We are using data on adolescent insomnia obtained from Kaggle at the link below. This data set provides information on 95 subjects and their responses to multiple self-reporting questionnaires. Questions on the surveys include sleep quality and habits, sleep-related cognition, stress, and stress re-activity, coping and emotion regulation behavior, mood, personality, and childhood trauma. Each participant in the study completed 18 different surveys designed to assess various potential insomnia factors. Each survey was self-reported by the individual and the study involved a clinical interview for the insomnia diagnosis, which is listed as the SubGroup variable.
+
+For our model, we decided to focus on the participants responses to the Adolescent Stress Questionnaire (ASQ) with the SubGroup diagnosis as the response variable. There are three categories in the SubGroup diagnosis: Control/No Insomnia, Sub-clinical Insomnia, and Clinical Insomnia
+
+Data source: <https://www.kaggle.com/datasets/utkarshx27/insomnia-symptomatology-in-adolescence?select=insomnia_data_dictionary.csv>
+
+# Hypotheses
+
+The hypotheses for a multinomial logistic regression model are the same as those for a binary logistic regression model
+
+Null Hypothesis: All the coefficients for our predictor variables are equal to 0 in the population
+
+Alternative Hypothesis: At least one of the coefficients for the predictor variables is different than 0 in the population
+
+# Data formatting and manipulation
+
+Load the data from insomnia_data.csv. Modify the path as needed.
+
+```{r}
+insomnia<- read.csv('insomnia_data.csv', sep = ',', header = TRUE)
+
+# Limit responses to those with the asq prefix
+asq_dat<- insomnia %>% select('SubGroup', starts_with('asq'))
+
+#Rename variables for ease of readability, removing "asq_" prefix
+asq_dat <- asq_dat %>%
+  rename("Home"="asq_home", "School"="asq_school", "Attendance"="asq_attendance",
+         "Romantic"="asq_romantic", "Peer"="asq_peer", "Teacher"="asq_teacher" ,
+         "Future"="asq_future", "Leisure"="asq_leisure", "Finance"="asq_finance" ,
+         "Responsibility"="asq_responsibility")
+
+# Set the outcome variable to a factor and check the data
+asq_dat$SubGroup<- as.factor(asq_dat$SubGroup)
+str(asq_dat)
+
+```
+
+Explanation: We have selected 11 columns from the original data set: SubGroup and all columns with header that starts with the string 'asq'. Using the str() function, we can see we now have a data frame with 95 rows and 11 columns. Subgroup, our predictor variable, is set to factor-type variable with 3 levels: 0 - No Insomnia, 1 - Sub-clinical Insomnia, 2 - Clinical Insomnia.
+
+For this demonstration, the explanatory variables are being treated as roughly continuous since we are assessing whether a point increase in the aggregated survey score for each grouping of questions correlates to an increased likelihood of an insomnia diagnosis.
+
+## Visual review of data
+
+As a first step, we will take a visual look at our data to see where there may be insights or concerns.
+
+```{r}
+asq_long<- gather(asq_dat[], key = 'Varaible', value = 'Value', -SubGroup)
+
+ggplot(asq_long, aes(y = SubGroup, x = Value, fill = SubGroup)) + geom_boxplot() + facet_wrap(~ Varaible, scales = 'free_x', ncol = 5) + scale_y_discrete(labels = c('No Insomnia', 'Subclinical Insomnia', 'Clinical Insomnia')) + theme(legend.position = 'none') + ylab(label = 'Insomnia Diagnosis') + xlab(label = 'Aggregated Survey Score for Each Survey Category') + labs(title = 'Potential Predictors Plotted Against Outcome Categories')
+
+```
+
+Explanation: Box plots are a useful tool for examining categorical data since they can easily show difference between groups. Here we should pay particular attention to the median line to look for predictors that show significant differences between groups. Here it looks like school and future could potentially be useful predictors given the differences. Box plots can also alert us to potential outlier concerns. In this case, it looks like teacher could be have some problematic outliers, but we'll test that in the assumption section below.
+
+# Additional data cleanup
+
+One thing to note that is not strictly related to the box plot is that when we run the code, we get a warning that there are non-finite values present. This could cause problems for the model so we'll take a look at those before preceding.
+
+```{r}
+
+# Show any rows that contain missing values
+asq_dat[!complete.cases(asq_dat),]
+
+# Remove any rows that have missing values
+asq_dat<- asq_dat[complete.cases(asq_dat),]
+
+```
+
+Explanation: We can use the complete.cases() method from stats to identify any rows with missing values. Since there are only two, and this demo is focused on the method, we'll go ahead and drop those to do a complete cases analysis. This leaves us with 93 observations.
+
+# Assess Data Assumptions for Multinomial Logistic Regression
+
+## Independence and Exhaustive categories
+
+Because our observations are from a single point in time, and there is not reason to believe that there would be and dependency among the survey respondents, we will assume independence for this code demo. We also know that the study specifically looked at diagnosing No Insomnia, Sub-clinical, or Clinical Insomnia. So we know that, by study design, these categories are exhaustive.
+
+## Minimum of 10 observations for each level and no level has more than 5 times the smallest number of observations.
+
+Because all of our predictor variables are being treated as continuous, we simply need to verify that each level of the outcome variable has a minimum of ten observations and then compare the largest and smallest groups to ensure they are not more than 5 times different.
+
+Note, that if we had treated any of our predictor variables as categorical we would need to ensure that each outcome/categorical pairing had a minimum of 10 observations as well.
+
+```{r}
+subgroups<- table(asq_dat$SubGroup)
+
+subgroups
+
+max(subgroups) > 5*min(subgroups)
+```
+
+Explanation: Looking at the table, we can see that our smallest group is 19 and our largest is 48. Since our smallest group is greater than 10, we've met the first part of the assumption. A simple logical test of the maximum and minimum values confirms that the largest value is not more than 5 times greater than the smallest. 
+
+## No Multicollinearity
+
+In a situation with more than 2 predictors, a variance inflation factor assessment is the best option for assessing multicollinearity. As with all regression models, this an important assumption because the presence of multicollinearity can result in the 'bouncing betas' problem.
+
+The vif() method does not work on models built using the multinom function that we will be using to build our model in the next section. However, this does not rely on the dependent/outcome variable so we can run a different regression model that works with vif() and use that assessment for this assumption. In this case, we've chosen to use a one-against-many binary logistic model.
+
+```{r}
+
+# Creating the binary logistic model using all potential predictor variables
+
+vif_model<- glm(SubGroup ~ ., data = asq_dat, family = 'binomial')
+
+# Use vif() to calculate the variance inflation factor
+vif_vals<- vif(vif_model)
+
+# Display vif values
+
+vif_vals
+
+# Check if any vif values are above the threshold for concern
+vif_vals > 5
+
+```
+
+Explanation: While different models and different scenarios will call for different thresholds, a general rule of thumb is that values greater than 5 are potentially concerning and greater than 10 are very concerning. By looking at both the raw values and using a simple logical statement, we can confirm that none of our values are above 5 and so we do not have any concerning levels of multicollinearity
+
+## No Outliers, High Leverage Values, or Highly Influential Points
+
+As we saw earlier, boxplots can be a useful way to look for potentially concerning outliers. If we see anything concerning, we can use Cook's Distance to determine if these outliers are highly influential, and therefore a concern for our model. Again, the plot() function that we'll use here doesn't work for models built with the multinom function, but a binary logistic model will still show us if there are any concerning outliers.
+
+```{r}
+boxplot(asq_dat, las = 3)
+
+plot(vif_model, 5)
+
+```
+
+Explanation: In examining the box plots, we do see a few observations that appear to be outliers that could be cause for concern. so we will look at the Residual-Leverage plots to assess if these outliers are highly influential by looking for any value that crosses the dotted line for Cook's distance. Reviewing the residual-leverage plot, we do not have any points that cross the 0.5 or 1.0 Cook's distance lines, so our data set does not violate this assumption. 
+
+## Hosmer and Lemeshow Goodness of Fit Test
+
+Finally, as a validation we can use the Hosmer Lemeshow test to assess the validity of our binary model. While this isn't explicitly an assumption of multinomial regression, it can add a layer of confidence that if the binary model is valid our multinomial model will be as well. This test assesses whether the proportion of observations in 'g' categories matches the expected proportion of observations, if the results are too far off from expected we would get a small p-value which would indicate our model was invalid. This is most often used to measure model fit, but here just provides us with additional confidence that we've properly assessed the assumptions.
+
+```{r}
+
+ResourceSelection::hoslem.test(vif_model$y, fitted(vif_model), g = 10)
+
+```
+Explanation: Our model results in a p-value of greater than .05, so we do not reject the null hypothesis and determine that our model is valid. Now that we have assessed the assumptions and provided an additional level of validation with the Hosmer Lemeshow test, we can move on to building our multinomial regression model.
+
+# Building the mutlinomial model
+
+To fit a multinomial regression model we've used the multinom() function from the nnet package. The syntax for this is very similar to the lm() and glm() functions to fit other regression models. 
+
+When running a multinomial model, it is important that you review the output of your model training to ensure the model converges. If not, you can increase the number of iterations performed in the model by changing the maxit argument. The default is 100 iterations, but that may not be sufficient for larger data sets or larger models. 
+
+
+```{r}
+
+# Create an intercept only model
+
+null_model<- multinom(SubGroup ~ 1 ,data = asq_dat, maxit=100)
+
+# Create a full model
+vars<- str_c(names(asq_dat[2:ncol(asq_dat)]), collapse = ' + ')
+fmla.full<- as.formula(str_c('SubGroup ~', vars))
+full_model<- multinom(fmla.full, data = asq_dat)
+
+# Use forward selection to identify the best model
+
+asq.forward<- stats::step(null_model, scope = fmla.full, direction = 'forward', trace = 1)
+```
+
+```{r}
+# Display the model
+
+asq.forward
+
+```
+
+Explanation:
+
+Since this demonstration is intended to focus on the method, we used a very minimal model selection process and chose not to use a train/test/validate split. That would be a valid approach, and generally recommended, for using this statistical method in a real world situation to help assess the model's predictive power.
+
+Using forward selection, our final model includes future, responsibility, and teacher. Since these are the predictors we'll be using to interpret the model, we'll take a moment to define them more clearly.
+
+Future: A rating of how much stress an adolescent experiences related to future uncertainty.
+
+Responsibility: A rating of how much stress an adolescent experiences related to emerging adult responsibilities.
+
+Teacher: A rating of how much stress an adolescent experiences related to teacher interaction.
+
+# Reviewing model output
+
+As with other regression models, our output includes coefficient estimates as well as a p-value indicating whether there is evidence to support rejecting the null hypothesis. However, with a multinomial regression model, each outcome category has its own set of coefficients and p-values associated with it. 
+
+As with binary logistic regression, the coefficient outputs of multinomial regression represent the change in log odds caused by an increase in that predictor. A positive number indicates an increase in the log odds given a one-unit change in the predictor and a negative coefficient indicates a decrease in log odds for a one-unit change in the predictor, holding all other variables constant.
+
+```{r}
+
+# Use tidy() from the Broom package to more cleanly display outputs of the final model
+
+asq.forward.tidy<- tidy(asq.forward)
+
+asq.forward.tidy
+
+```
+
+Explanation: Reviewing the outcomes, and specifically the p-values, we find that there is evidence that future and responsibility have a statistically significant impact on a sub-clinical diagnosis while future, responsibility, and teacher have statistically significant impacts on a clinical diagnosis.
+
+Therefore, interpreting the coefficients, we could say that a 1 point increase in the aggregated survey score for how much stress an adolescent experiences related to future uncertainty is correlated with a .36 increase in the log odds of an adolescent being diagnosed with sub-clinical insomnia (1) as opposed to no insomnia (0) and a .41 increase in the log odds of an adolescent being diagnosed with clinical insomnia (2) as opposed to no insomnia (0).
+
+We could also say that a 1 point increase in the aggregated survey score for how much stress an adolescent experiences as a result of teacher interaction is correlated with a .26 increase in the log odds of that adolescent being diagnosed with clinical insomnia (2) as opposed to no insomnia (0). However, because the p-value for teacher for sub-clinical insomnia (1) is larger .05, we would not interpret the coefficient for that diagnosis.
+
+# Converting coefficents
+
+These coefficients can also be converted to either an odds ratio or probabilities by performing the related calculation to achieve those numbers. A simple conversion using the exponential function produces the odds ratio of the coefficients from the model. Now, a coefficient above 1 indicates that an increase in that predictor makes that outcome more likely, while a coefficient of less than 1 indicates that it decreases the likelihood.
+
+Note that when this conversion occurs the formula is $exp(\hat y) = exp(\beta x)$. Because the transformation is preformed both on the coefficient and the $x$ value for the observation, the interpretation is no longer related to a one-unit increase, but the exponentiated $x$ value. Therefore, it is more common to just interpret the results as more or less likely, rather than relating to a unit increase
+
+```{r}
+
+# Create new model output to just display the dependent variables, explanatory variables, coefficients
+model_coef<- asq.forward.tidy %>% select(y.level, term, estimate)
+
+# Exponentiate the log odds to produce the odds ratio
+model_coef$odds_ratio<- exp(model_coef$estimate)
+
+model_coef
+
+```
+
+
+The odds ratio can then be converted using the formula $\frac{b}{1+b}$ where $b$ is the odds ratio. Now a value greater than 0.5 indicates more likely and a value less than 0.5 indicates less likely. Again, this formula applies to the entire $\beta x$ and so you should be careful in interpreting the relationship of the probability to the increase in $x$. It is more common to convert your prediction outcomes to probability rather than just the coefficients, although the formula is the same for both.
+
+```{r}
+
+model_coef$probability<- (model_coef$odds_ratio)/(1+model_coef$odds_ratio)
+
+model_coef
+```
+
+# Analysis of the Model
+
+A confusion matrix is a common way to assess the model. When there are more than two groups in a confusion matrix, each group has its own true positive, false negative, true negative, and false positive values. For example, when the true positive value is the count of SubGroup = 0 in both the actual and predicted data, the false negative value is the sum of the actual = 0, predicted = 1 and actual = 0, predicted = 2. We continue like this to find the rest of the values. Then we repeat the process to find the accuracy, precision, recall, and F1 score for the other SubGroup values (1 and 2 in this case).
+
+```{r}
+
+# Saves predicted outcome category generated by the model
+probs.asq.predict = predict(asq.forward, type = 'class')
+
+# Convert subgroup to numeric
+Actual = as.numeric(asq_dat$SubGroup)
+table(Actual)
+
+Predicted = as.numeric(probs.asq.predict)
+
+# Confusion Matrix
+confusion.matrix <- table(Actual = asq_dat$SubGroup, Predicted = probs.asq.predict)
+confusion.matrix
+
+
+```
+
+We will first calculate the confusion matrix scores for predictions of No Insomnia (0)
+
+```{r}
+#SubGroup = 0 Case:
+
+# Calculate the required numbers from the confusion matrix
+TP_0 = confusion.matrix[1]
+FN_0 = confusion.matrix[4] + confusion.matrix[7]
+FP_0 = confusion.matrix[2] + confusion.matrix[3]
+TN_0 = confusion.matrix[5] + confusion.matrix[6] + confusion.matrix[8] + confusion.matrix[9]
+
+# Calculate accuracy, precision, recall, and F1
+Accuracy_0 = (TP_0 + TN_0)/(TP_0 + TN_0 + FP_0 + FN_0)
+Precision_0 = (TP_0)/(TP_0 + FP_0)
+Recall_0 = (TP_0)/(TP_0 + FN_0)
+F1Score_0 = 2 * ((Precision_0 * Recall_0)/(Precision_0 + Recall_0))
+
+```
+
+Next, we will calculate the confusion matrix scores for Sub-clinical Insomnia (1)
+
+```{r}
+#SubGroup = 1 Case:
+TP_1 = confusion.matrix[5]
+FN_1 = confusion.matrix[2] + confusion.matrix[8]
+FP_1 = confusion.matrix[4] + confusion.matrix[6]
+TN_1 = confusion.matrix[1] + confusion.matrix[3] + confusion.matrix[7] + confusion.matrix[9]
+
+Accuracy_1 = (TP_1 + TN_1)/(TP_1 + TN_1 + FP_1 + FN_1)
+Precision_1 = (TP_1)/(TP_1 + FP_1)
+Recall_1 = (TP_1)/(TP_1 + FN_1)
+F1Score_1 = 2 * ((Precision_1 * Recall_1)/(Precision_1 + Recall_1))
+```
+
+And finally we calculate the confusion matrix scores for Clinical Insomnia (2)
+
+```{r}
+#SubGroup = 2 Case:
+TP_2 = confusion.matrix[9]
+FN_2 = confusion.matrix[3] + confusion.matrix[6]
+FP_2 = confusion.matrix[7] + confusion.matrix[8]
+TN_2 = confusion.matrix[1] + confusion.matrix[2] + confusion.matrix[4] + confusion.matrix[5]
+
+Accuracy_2 = (TP_2 + TN_2)/(TP_2 + TN_2 + FP_2 + FN_2)
+Precision_2 = (TP_2)/(TP_2 + FP_2)
+Recall_2 = (TP_2)/(TP_2 + FN_2)
+F1Score_2 = 2 * ((Precision_2 * Recall_2)/(Precision_2 + Recall_2))
+
+```
+
+We can now compare these scores across categories
+
+```{r}
+
+# Create a data frame of the values for easier comparison
+
+con_mat_scores<- data.frame(
+  Subgroup = c(0, 1, 2),
+  Accuracy = c(Accuracy_0, Accuracy_1, Accuracy_2),
+  Precision = c(Precision_0, Precision_1, Precision_2),
+  Recall = c(Recall_0, Recall_1, Recall_2),
+  F1 = c(F1Score_0, F1Score_1, F1Score_2)
+)
+
+con_mat_scores
+
+```
+
+
+Explanation: Calculating the score for each group has provided us with the model's predictive power for each category allowing us to compare where it does well and where it has challenges.
+
+Accuracy is not the best measure when the data set is unbalanced. In this data set there is a large difference between positive and negative instances in the data. In this case, the actual values for SubGroup 0, 1, and 2 were 48, 19, and 26 respectively. Depending on your cut off for balanced vs unbalanced, we may not want to put much weight on the accuracy for each group. Based on the values above, the model was able to more accurately predict SubGroup = 2 cases, although they all seemed to be relatively similar.
+
+A good classifier would have precision equal to 1. The precision will be 1 when the count of false positives is equal to 0. False positives are results that indicate a positive when the actual value is negative. The fewer false positives we have in our prediction (relative to the true positives) the more precise the model is for that case. The most precise prediction from our model was 0.6825 for SubGroup 0. SubGroup 0 had the most false positives out of all the groups, but since SubGroup 0 also had the most true positives by a large margin, the precision value was the highest among the SubGroups. While Subgroup 0 and 2 are relatively close, Subgroup one appears to have poor precision compares to the others
+
+Recall should also be 1 for a good classifier. Recall is the ratio of true positives to actual positives. In other words, how often did the model correctly predict a positive result for all actual positives. The recall value will decrease for actual positives that were predicted as negatives. The highest recall value was for SubGroup 0 at 0.8958. In this case, both Subgroup 1 and 2 had relatively poor recall compared to subgroup 1
+
+A perfect classifier will have precision and recall equal to 1. This means that false positives and false negatives are both 0. If false positives and false negatives are both 0, that means that all actual positives were predicted positive and all actual negatives were predicted negative. F1 score is what is called a harmonic mean and is thought to be a better measure of the predictive power of a model than accuracy is. The highest F1 score for our model was for SubGroup SubGroup 0. Once again, Subgroup 2 preforms better than Subgroup 1 but not as well as Subgroup 0.
+
+In reviewing the confusion matrix, we would conclude that our model does relatively well at predicting Subgroup 0 but appears to struggle to differentiate between Subgroup 1 and 2. This indicates that while the variables we selected for our model may do well at identifying whether an adolescent has some type of sleep disorder, it is not nuanced enough to accurately predict whether that will be sub-clinical or clinical insomnia.
+
+# Exploring Data Visually
+
+To examine the relationship each variable has on the outcome variable prediction of SubGroup category, we can generate small data sets holding two of the variables constant while varying the third variable over the span of potential question responses. Then we can use these to visualize how the predicted probabilities change for each SubGroup as the input variable changes.
+
+We will start by holding responsibility and teacher constant at their medians in the responses and creating a data set which contains a sequence of all possible scores for the question of future. Responsibility will be constant at 4 and Teacher will be constant at 8.
+  
+```{r}
+#Create a sample data set which contains all possible combinations of values for the future score while responsibility set to median of 4 and teacher set to median of 8
+dat.future <- data.frame(Future = rep(c(3:15), each = 1), Responsibility = median(asq_dat$Responsibility), Teacher = median(asq_dat$Teacher)) 
+#Generate predicted probabilities for the sample observations
+pp.future <- cbind(dat.future, predict(asq.forward, newdata = dat.future, type = "probs", se = TRUE))
+
+#Transform the data into a long format
+long.pp.future <- reshape2::melt(pp.future, id.vars = c("Future", "Responsibility", "Teacher"), value.name = "probability")
+
+```
+
+Now, holding future and teacher constant at their medians, while varying responsibility. Future and Teacher scores will be constant at 8.
+
+```{r}
+dat.resp <- data.frame(Future = median(asq_dat$Future), Responsibility = rep(c(3:11), each = 1), Teacher = median(asq_dat$Teacher)) 
+ 
+pp.resp <- cbind(dat.resp, predict(asq.forward, newdata = dat.resp, type = "probs", se = TRUE))
+ 
+long.pp.resp <- reshape2::melt(pp.resp, id.vars = c("Future", "Responsibility", "Teacher"), value.name = "probability")
+
+```
+
+Last, holding future and responsibility constant at their medians, 4 and 8 respectively, while varying teacher score over possible values. 
+
+```{r}
+dat.teacher <- data.frame(Future = median(asq_dat$Future), Responsibility = median(asq_dat$Responsibility), Teacher = rep(c(7:23), each =1)) 
+ 
+pp.teacher <- cbind(dat.teacher, predict(asq.forward, newdata = dat.teacher, type = "probs", se = TRUE))
+ 
+long.pp.teacher <- reshape2::melt(pp.teacher, id.vars = c("Future", "Responsibility", "Teacher"), value.name = "probability")
+
+```
+
+We can now plot these to see how each variable impacts the outcome predicted
+
+## Impact of Changes in Future Score on Predicted Probability of Diagnosis
+```{r}
+#Future
+ggplot(long.pp.future, aes(x= Future, y=probability, color=variable)) +
+  geom_line() +
+  ggtitle("Diagnosis Predicted Probabilities by Future Survey Score", subtitle = "Holding Responsibility at 4 & Teacher at 8") + scale_color_discrete(name ='SubGroup', labels=c('No Insomnia', 'Subclinical', 'Clinical Insomnia')) +
+  xlab("Future Score") + ylab("Predicted Probability")
+```
+First, while holding Responsibility and Teacher survey scores constant at their medians (4 & 8 respectively), this shows how the predicted probabilities of each diagnosis (SubGroup) category changes as the survey score for Future changes. For low score responses in Future, No Insomnia has the highest predicted probability. The predicted probability of No Insomnia begins to decline until at a Future score of around 11, Clinical Insomnia becomes the predicted diagnosis. This shows that, at least for the most common Responsibility and Teacher scores, a diagnosis of Clinical Insomnia becomes more likely as the Future score increases.
+
+## Impact of Changes in Responsibility Score on Predicted Probability of Diagnosis
+```{r}
+#Responsibility
+ggplot(long.pp.resp, aes(x= Responsibility, y=probability, color=variable)) +
+  geom_line() +
+  ggtitle("Diagnosis Predicted Probabilities by Responsibility Survey Score", subtitle = "Holding Future at 8 & Teacher at 8") + scale_color_discrete(name ='SubGroup', labels=c('No Insomnia', 'Subclinical', 'Clinical Insomnia')) +
+  xlab("Responsibility Score") + ylab("Predicted Probability")
+```
+With Future and Teacher scores both held constant at 8, a diagnosis of No Insomnia is the most likely outcome regardless of the Responsibility score. We can see the predicted probability of No Insomnia starts out around .4 on the low end of Responsibility and then increases quickly as the Responsibility score increase.
+
+## Impact of Changes in Teacher Score on Predicted Probability of Diagnosis
+```{r}
+#Teacher
+ggplot(long.pp.teacher, aes(x= Teacher, y=probability, color=variable)) +
+  geom_line() +
+  ggtitle("Diagnosis Predicted Probabilities by Teacher Survey Score", subtitle = "Holding Future at 8 & Responsibility at 4") + scale_color_discrete(name ='SubGroup', labels=c('No Insomnia', 'Subclinical', 'Clinical Insomnia')) +
+  xlab("Teacher Score") + ylab("Predicted Probability")
+```
+With survey scores for Future held constant at 8 and Responsibility at 4, here we can see how changes in the Teacher survey score impact the predicted probability of each diagnosis category. While the Teacher score is low, a diagnosis of No Insomnia has the highest predicted probability. At a score of about 12, diagnoses of No Insomnia and Clinical Insomnia are predicted at nearly equal probability. However, as the Teacher score continues to increase, a diagnosis of Clinical Insomnia begins to dominate the predicted probability and becomes the most likely outcome.
+
+## Overall
+
+Examining these graphs as a whole, we can see a continuing theme from the confusion matrix and p-values of our model. For example, we can see that teacher has a large impact for a clinical diagnosis, but very little for a sub-clinical diagnosis, which explains the difference in p-values for the two outcomes. In addition, looking at future and responsibility we can see that sub-clinical and clinical diagnosis align very closely with very little difference between their lines. This aligns with the interpretation of the confusion matrix where we found that the model was relatively good at predicting a diagnosis of No Insomnia, but performed poorly when attempting to differentiate between sub-clinical and clinical insomnia cases.
+
+# Conclusion
+
+Multinomial Logistic Regression is a useful method when attempting to classify observations into 3 or more categories. It's assessment and interpretation is very similar to binary logistic regression, but because it creates multiple underlying models it is important to properly assess how the model interacts with every outcome category.
