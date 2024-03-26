@@ -5,6 +5,8 @@ This repository contains samples of projects and assignments completed during my
 
 **Advanced Probability and Statistics**
 
+_Insomnia in Students mlr_
+
   The focus of this project was to develop a teaching presentation for the class covering a statistical method that had not been covered in the class. My group was assigned multinomial logisitc regression and we chose to use an insomnia study of students as our dataset.
 
 **Data Science Capstone**
@@ -19,16 +21,24 @@ The goal of this project was to identify whether a former charitable donor would
 
 **Data Science Tools**
 
+_Food Access and Graduation Rates Analysis_
+
 This project focused on determining if there was a relationship between the level of food access and high school graduation rates by census tract. The assignment objective was to practice data cleaning skills and so the project focuses more heavily on teh data exploration and cleaning phase than the analysis portion.
 
 **Deep Learning**
+
+_Bird Species Identification_
 
 This project focused on building a convolutional neural network to classify birds into the correct species based on their image. The assignment objective was to focus on understanding how to evaluate and optimize a neural network and so some common methods of improvement such as transfer learning were not explored. 
 
 **Machine Learning**
 
+_Bike Share Data Analysis_
+
 This assignment used usage data from a bike sharing company and focused on data exploration, model selection, and model tuning. 
 
 **Probability and Statistics**
+
+_High School Graduation Rates_
 
 This project used a decision tree regressor to predict high school graduation rates using various features from public school details
