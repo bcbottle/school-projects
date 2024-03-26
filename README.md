@@ -1,7 +1,7 @@
 **School Projects Repository**
 _______________________________
 
-This repository contains samples of projects and assignments completed during my graduate program with teh University of Denver. It includes projects completed independently and with teams.
+This repository contains samples of projects and assignments completed during my graduate program with the University of Denver. It includes projects completed independently and with teams. A brief description of the project(s) in each class folder is provided below. 
 
 **Advanced Probability and Statistics**
 
