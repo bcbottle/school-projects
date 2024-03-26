@@ -1,3 +1,5 @@
+**School Projects Repository**
+
 This repository contains samples of projects and assignments completed during my graduate program with teh University of Denver. It includes projects completed independently and with teams.
 
 **Advanced Probability and Statistics**
