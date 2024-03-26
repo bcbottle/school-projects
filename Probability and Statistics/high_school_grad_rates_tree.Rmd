@@ -1,0 +1,326 @@
+---
+title: "Final Project"
+author: "B. Bottle & S. McManus"
+date: "`r Sys.Date()`"
+output:
+  word_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(educationdata)
+library(ggpubr)
+library(dplyr)
+library(rpart)
+library(rpart.plot)
+library(lmtest)
+library(car)
+```
+
+```{r include=FALSE}
+# Download data sets
+
+school_data <- get_education_data(level = "schools",
+     source = "ccd",     topic = "directory",
+     filters = list(year = 2017, school_level = 3, school_type = 1, charter = 0, magnet = 0, virtual = 0, shared_time = 0))
+
+grad_rate_data <- get_education_data(level = "schools",
+     source = "edfacts",
+    topic = "grad-rates",
+     filters = list(year = 2017, race = 99, disability = 99, econ_disadvantaged = 99, foster_care = 99, homeless = 99, lep = 99))
+
+```
+
+```{r include=FALSE}
+# Clean and organize data
+
+test_grad <- grad_rate_data %>% select(ncessch, cohort_num, grad_rate_midpt)
+
+test_grad <- filter(test_grad, test_grad$cohort_num >= 31)
+
+test_school <- school_data %>% select(ncessch, school_name, leaid, city_location, state_location, zip_location, enrollment, urban_centric_locale, teachers_fte, free_or_reduced_price_lunch)
+
+test_school<- test_school %>% filter(free_or_reduced_price_lunch >= 0, teachers_fte >= 0)
+
+test_data <- inner_join(test_school, test_grad, by = 'ncessch')
+
+test_data$num_grad<- round(test_data$cohort_num*test_data$grad_rate_midpt)
+
+# Clean out environment
+
+rm(test_school)
+rm(test_grad)
+
+# Add columns for student/teacher ratio, proportion of students on free or reduced lunch, and a categorical identifier for urban centric locale.
+
+test_data$student_per_fte<- round(test_data$enrollment/test_data$teachers_fte)
+test_data$prop_lunch<- round(test_data$free_or_reduced_price_lunch/test_data$enrollment, 2)
+test_data$student_per_fte[test_data$student_per_fte == Inf]<- 0 # 2 schools had 0 fte's on staff which was calculating to Inf instead of 0. 
+test_data$cat_locale<- with(test_data,
+                            ifelse(test_data$urban_centric_locale %in% c(1, 2, 3, 4, 11, 12, 13), 'City',
+                            ifelse(test_data$urban_centric_locale %in% c(21, 22, 23), 'Suburb',
+                            ifelse(test_data$urban_centric_locale %in% c(5, 6, 31, 32, 33), 'Town',
+                            ifelse(test_data$urban_centric_locale %in% c(7, 8, 41, 42, 43), 'Rural', 'N/A')
+                            ))))
+
+tree_data<- test_data %>% select(ncessch, cat_locale, cohort_num, student_per_fte, prop_lunch, grad_rate_midpt)
+tree_data_adj<- test_data %>% filter(student_per_fte < 544)
+
+```
+
+
+# Research Question
+
+For this project, we explored what impact different school demographic factors had on graduation rates for high school students. Our study assessed the impact of  student to full time teacher ratio, proportion of students eligibile for free or reduced lunch (as a proxy for income status of students), and the total size of the graduating class.
+
+# Data Description
+
+**Data Source**
+
+Our data was collected through the Urban Institute's Education Data Portal. This portal collects data from several education databases and makes them easily accessible via API calls. Through Urban Institute we accessed graduation rates and cohort sizes from EDFacts and collected school demographics from the Common Core of Data, both databases maintained by the Department of Education. (Data Source: https://educationdata.urban.org/documentation/schools.html#ccd_directory)
+
+Our data focused on high school graduation rates from the 2016-2017 school year. To provide more consistency in the reporting and requirements for our study sample we limited our research to schools that were categorized as 'Regular Schools' as opposed to vocational, special education, and alternative schools (classifiers used by the DOE). We also excluded magnet schools, virtual schools, and part-time trade schools.
+
+Of note, even after applying these filters we identified a number of schools that appeared to be out of scope including York Alternative High School in Chicago, IL and 'GIVE' West in Norcross, GA which, from a review of their websites seemed to be geared towards nuero-diverse and behaviorally challenged students respectively. In reviewing the classifiers we could not identify a consistent approach to categorize or remove these schools so they remain in our data set for this analysis. 
+
+**Measures**
+
+**Cohort Number** - (cohort_num) The cohort number (also known as Adjusted Cohort) is a nationally standardized methodology for counting the number of students in that year's graduating class. This number is calculated by taking the number of students who were first time 9th graders 4 years prior to the year in question minus any students who transferred out of the school prior to the end of the targeted graduation year plus any students who transferred in.
+
+For our data that means students who were first time ninth graders in the 2012-2013 school year and transfers who were slated to graduate in the 2016-2017 school year. 
+
+**Grad Rate Midpoint** - (grad_rate_midpt) Graduation rates are calculated by taking the number of students from the cohort who graduated and dividing this by the total cohort number. In order to protect student personal data, all graduation rates are reported in a range with a high, low, and midpoint rate. As the size of cohort increases the magnitude of the range decreases. For the purposes of our research project we decided to use the midpoint graduation rate for consistency and to only include cohorts larger than 30 students since the range was too large at the lower numbers to be useful in our analysis.  
+
+**student_per_fte** - A ratio we calculated that represents the ratio of students to full time teachers. Calculated by dividing the total number of students by the number of full time teachers (FTE) and rounding to the nearest whole number
+
+**prop_lunch** - A proportion we calculated that represents the proportion of the total student body eligible for free or reduced lunch. Calculated by dividing the total number of students eligible for free or reduced lunch by the total number of students and rounded to 2 decimal places.
+
+# Data Review
+
+An initial review of the data showed a wide spread for most of the variables being reviewed with somewhat extreme minimums or maximums compared to the median.
+
+```{r echo=FALSE}
+summary(tree_data)
+```
+
+
+In a visual review of the data we can see that cohort_num and grad_rate_midpt both have heavy skew (right and left respectively) explaining the spread and unusual maximum and minimum data points. 
+
+```{r echo=FALSE}
+
+skewed_plots<- tree_data %>% select(cohort_num, grad_rate_midpt)
+
+ggplot(gather(skewed_plots, variable, value), aes(x=value)) + stat_density() +
+facet_wrap(~variable, scales = "free")
+
+```
+
+
+prop_lunch appears to be somewhat normally distributed with a slight skew.
+
+```{r echo=FALSE}
+ggplot(tree_data, aes(x= prop_lunch)) + stat_density()
+
+```
+
+
+students_per_fte however appears to be normally distributed with one extreme outlier. Looking at the scatter plot confirms this assessment.
+
+```{r echo=FALSE}
+
+ggplot(tree_data, aes(x= student_per_fte)) + stat_density(color = 'red')
+
+tree_data %>% ggplot(aes(x= student_per_fte, y = grad_rate_midpt)) + geom_point()
+```
+
+```{r include=FALSE}
+# Creating linear models
+
+model<- lm(grad_rate_midpt ~ student_per_fte + prop_lunch + cohort_num, data=tree_data)
+adj_model<- lm(grad_rate_midpt ~ student_per_fte + prop_lunch + cohort_num, data=tree_data_adj)
+
+```
+
+
+**Assessing Outliers**
+
+Given the outlier in the students_per_fte data we used Cook's Distance to assess the leverage of the outliers. Running cook's distance on the residuals with the FTE outlier included and removed indicated that this outlier was the high leverage outlier in our data.
+
+```{r echo=FALSE}
+# check for leverage
+plot(model,which=4, main = 'FTE Outlier Included')
+
+plot(adj_model,which=4, main = 'FTE Outlier Excluded')
+
+```
+
+
+In reviewing the school that produced this outlier we found that their website stated they had a 14:1 student ratio, while our data indicated a 544:1 ratio. Given this discrepancy we determined it must either be a data error or some oddity of classification that resulted in teachers not being considered FTE. For the purposes of this project we determined that it was best to remove this outlier. The remaining work uses the data set with this school removed.
+
+**Tests for Method Validity**
+
+After removing the outlier, we assessed the state of our data to determine an appropriate method to apply. Our original intent was to use multiple linear regression, so we began by exploring whether our data would meet the criteria to apply this method. 
+
+A visual check of the normality of the residuals of our data showed that our data was not normal, which was not particularly surprising given the skew seen in the initial graphs above. 
+
+```{r echo=FALSE}
+#check for normality
+
+plot(adj_model, which=2, col=c("darkgreen"), main = 'Test for Normality')
+```
+
+
+Knowing that we may have some options to normalize our data we also assessed the linearity of our data. A visual check of this also failed and indicated our data was non-linear.
+
+```{r echo=FALSE}
+#Check for linearity
+
+plot(adj_model, which= 1, col=c('navyblue'), main = 'Test for Linearity') 
+
+```
+
+
+Given that our data failed to meet both these criteria we determined that a robust method of regression was needed to avoid having to preform extreme data transformation that would have made interpretation more difficult. In reviewing options we settled on using a regression tree model which would sacrifice some precision in interpretation while allowing us to use our data without transformations.
+
+# Application of Regression Tree Method
+
+To build our regression tree we used the rparts library and used a built in method of cross validation to optimize our tree.
+
+The initial step of this process was to create an over-fit tree with a large number of splits. This was accomplished by using the complexity parameter as a control, which instructs the model to split the tree only when a split would improve the prediction error of the tree by the amount indicated. For our initial tree we set the complexity parameter to .0001.
+
+```{r echo=FALSE}
+# Create initial tree, fitting the data very closely in order to generate a high number of possible pruned trees
+set.seed(1358013)
+
+tree<- rpart(grad_rate_midpt ~ prop_lunch + student_per_fte + cohort_num, data = tree_data_adj, control = rpart.control(cp=.0001))
+
+# Print the details for the over-fit tree
+
+print('First 6 nodes of overfit tree')
+head(tree$cptable)
+
+
+print('Last 6 nodes of overfit tree')
+tail(tree$cptable)
+```
+
+
+We then used the 'xerror' calculated by rpart to optimize our tree for our analysis. This xerror is the error produced during a 10-fold cross validation of the data at each level of the tree. This is calculated in several steps:
+
+1) The data is split into 10 random groups
+2) The first of those groups is set aside as a 'test' data set and the remaining 9 become the 'train' data set.
+3) A tree is built using the 'train' data set as the sample and the complexity parameter (CP) of the tree at that node
+4) The tree is then used to predict the $y$ outputs of the 'test' data set and the error of its predictions are calculated.
+5) Steps 2 through 4 are then repeated using the 2nd, 3rd, ... 10th data set as the 'test' data set and the overall xerror for that subtree is calculated.
+
+rpart repeats this for every split in the tree and provides the xerror for each. A high xerror indicates either that the tree is under-fit and the groups are too large to be predictive or that the tree is over-fit and the groups are so small that the tree does not have flexibility to predict variance in new data sets.
+
+Once the smallest xerror is identified the tree can be pruned using the complexity parameter of the identified subtree. This will 'snip' off the least important splits. This is essentially saying that if you improve the error beyond that point you will be over-fitting the data and losing the predictive power of the tree.
+
+In reviewing xerror we determined the following qualifications for our 'best fit' tree:
+
+```{r echo=FALSE}
+
+# Pull out smallest xerror and matching CP
+
+result_dat<- data.frame(
+                        best_xerror = tree$cptable[which.min(tree$cptable[,'xerror']), 'xerror'],
+                         best_cp= tree$cptable[which.min(tree$cptable[,'xerror']), 'CP'])
+
+result_dat
+
+# Create Pruned Tree
+
+set.seed(1358013)
+
+pruned_tree<- prune(tree, cp = result_dat$best_cp)
+
+```
+# Analysis of Regression Tree
+
+This resulted in a tree with 7 nodes and 8 leaves. The smallest leaf contained 10 observations (0.17%), and the largest leaf contained 1,878 observations (31.7%). 
+
+```{r echo=FALSE}
+
+# Print cp table of the pruned tree
+
+pruned_tree
+```
+
+```{r include=FALSE}
+
+# Run the summary for analysis, but leaving out of paper. 
+
+summary(pruned_tree)
+
+```
+
+
+Using rpart's built in variable importance calculation, we see that the proportion of students eligible for free and reduced lunch stands out as the most important variable for our tree, with the student teacher ratio and cohort number taking a relatively small percentage of the importance. 
+
+```{r echo=FALSE}
+
+scale_var<- function(x){
+  round(x/sum(pruned_tree$variable.importance), 2)
+}
+
+var_imp<- data.frame(pruned_tree$variable.importance)
+
+scaled_imp<- apply(var_imp, MARGIN = 1, FUN = scale_var)
+
+scaled_imp*100
+
+
+```
+Visually examining the tree validates this as well. We can see that the proportion of students eligible for free and reduced lunch accounts for the majority of splits, including the root node. In fact, how well a school does if their proportion is less than .685 is entirely determined by how low their proportion is. And schools with a proportion less than .335 are predicted to have the highest graduation rate (93.62) regardless of any other factors.
+
+The student/FTE ratio only impacts the outcome for schools that have a free or reduced lunch proportion over .685 and the only splits occur at the 8:1 and 15:1 ratio. Counter intuitively, the model shows that ratios greater than 8:1 produce higher graduation rates in the grouping, with the highest occurring with ratios between 8:1 and 15:1 with a free reduced lunch proportion between .685 and .735. 
+
+Schools with a student/FTE ratio less than 8:1 have the lowest graduation rates of all the groups and are the only group where cohort number produces a split. For schools in this category, a cohort number less than 62 drops graduation rates from an average 58.7 to 28.58, the largest change in graduation rates between any adjacent groups.
+
+```{r echo=FALSE}
+
+prp(pruned_tree,
+    extra = 101,
+    under = TRUE,
+    fallen.leaves = TRUE,
+    yesno = 2,
+    left = FALSE,
+    digits = 4,
+    varlen = 0,
+    faclen = 0,
+    clip.facs = TRUE,
+    box.palette = 'Reds',
+    round = 0
+    )
+```
+
+# Challenges with the model
+
+```{r include=FALSE}
+# R block to generate numbers, not included in paper
+
+pruned_tree
+
+nrow(filter(tree_data_adj, tree_data_adj$grad_rate_midpt <= 10))/nrow(tree_data_adj)
+```
+
+
+In comparing what we know of actual graduation rates with the groupings provided, it seems evident that our model is able to make more nuanced predictions at higher graduation rates. For example, while we know that there were 10 schools with graduation rates less than or equal to 10%, the lowest predicted rate those schools could get would be 28.58, more than 18 points higher. When comparing the mean squared error across each leaf of the tree, this is validated.
+
+All leaves with graduation rates of 80.41 or less had MSEs of 202 or higher while the leaves with graduation rates of 84.65 or higher had MSEs of 78 or less. This indicates our model is better fit for graduation rates at the high level, but the groupings at lower levels are still quite broad. 
+
+This is possibly a result of the sampling of our data. As mentioned earlier in this paper, there were a number of schools that did not appear to be representative of the population we were attempting to study, but did not have a clear way to filter out of the data. Many of the schools with low graduation rates fell into this category and so may have resulted in creating noisy data at the lower graduation rates. Our lack of knowledge on school administration and logistics makes it difficult to assess whether these schools should truly be removed or not to improve our model. 
+
+
+# Conclusions
+
+In conclusion, our regression tree analysis indicates that a lower proportion of students eligible for free or reduced lunch is the best predictor for a higher graduation rate. 
+
+It also indicates that the FTE/student ratio is only an important predictor for schools that have free or reduced lunch proportions greater than .685. And cohort number is a largely insignificant predictor for graduation rates for the majority of schools.
+
+However, given the challenges stated above, conclusions regarding schools with low graduation rates should be questioned given the high MSE and concerns over proper sampling.
+
+Additional tests would be useful to increase the strength of this model including introducing a test/train split and performing a random forest model. However, we chose to focus on understanding the basics of the decision tree model for the purposes of this project as opposed to applying more advanced methods.
